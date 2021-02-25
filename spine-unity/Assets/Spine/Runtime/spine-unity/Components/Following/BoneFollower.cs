@@ -47,11 +47,6 @@ namespace Spine.Unity {
 	public class BoneFollower : MonoBehaviour {
 
 		#region Inspector
-		public enum ScaleMode {
-			Local = 0,
-			WorldUniform
-		}
-
 		public SkeletonRenderer skeletonRenderer;
 		public SkeletonRenderer SkeletonRenderer {
 			get { return skeletonRenderer; }
@@ -72,12 +67,19 @@ namespace Spine.Unity {
 		[Tooltip("Follows the skeleton's flip state by controlling this Transform's local scale.")]
 		public bool followSkeletonFlip = true;
 
-		[Tooltip("Follows the target bone's scale.")]
-		[UnityEngine.Serialization.FormerlySerializedAs("followLocalScale")]
-		public bool followScale = false;
+		[Tooltip("Follows the target bone's local scale. BoneFollower cannot inherit world/skewed scale because of UnityEngine.Transform property limitations.")]
+		[UnityEngine.Serialization.FormerlySerializedAs("followScale")]
+		public bool followLocalScale = false;
 
-		[Tooltip("Follows the target bone's local or uniform world scale. Note: If world scale is non-uniform/skewed, you will receive incorrect results with WorldUniform.")]
-		public ScaleMode followScaleMode = ScaleMode.Local;
+		public enum AxisOrientation {
+			XAxis = 1,
+			YAxis
+		}
+		[Tooltip("Applies when 'Follow Skeleton Flip' is disabled but 'Follow Bone Rotation' is enabled."
+			+ " When flipping the skeleton by scaling its Transform, this follower's rotation is adjusted"
+			+ " instead of its scale to follow the bone orientation. When one of the axes is flipped, "
+			+ " only one axis can be followed, either the X or the Y axis, which is selected here.")]
+		public AxisOrientation maintainedAxisOrientation = AxisOrientation.XAxis;
 
 		[UnityEngine.Serialization.FormerlySerializedAs("resetOnAwake")]
 		public bool initializeOnAwake = true;
@@ -151,6 +153,7 @@ namespace Spine.Unity {
 			}
 
 			Transform thisTransform = this.transform;
+			float additionalFlipScale = 1;
 			if (skeletonTransformIsParent) {
 				// Recommended setup: Use local transform properties if Spine GameObject is the immediate parent
 				thisTransform.localPosition = new Vector3(followXYPosition ? bone.worldX : thisTransform.localPosition.x,
@@ -158,10 +161,7 @@ namespace Spine.Unity {
 														followZPosition ? 0f : thisTransform.localPosition.z);
 				if (followBoneRotation) {
 					float halfRotation = Mathf.Atan2(bone.c, bone.a) * 0.5f;
-					if (followScale &&
-						(followScaleMode == ScaleMode.Local ?
-						 (bone.scaleX < 0) :
-						 (bone.WorldScaleX < 0))) // Negate rotation from negative scaleX. Don't use negative determinant. local scaleY doesn't factor into used rotation.
+					if (followLocalScale && bone.scaleX < 0) // Negate rotation from negative scaleX. Don't use negative determinant. local scaleY doesn't factor into used rotation.
 						halfRotation += Mathf.PI * 0.5f;
 
 					var q = default(Quaternion);
@@ -178,32 +178,39 @@ namespace Spine.Unity {
 					targetWorldPosition.y = thisTransform.position.y;
 				}
 
-				float boneWorldRotation = bone.WorldRotationX;
-
+				Vector3 skeletonLossyScale = skeletonTransform.lossyScale;
 				Transform transformParent = thisTransform.parent;
-				if (transformParent != null) {
-					Matrix4x4 m = transformParent.localToWorldMatrix;
-					if (m.m00 * m.m11 - m.m01 * m.m10 < 0) // Determinant2D is negative
-						boneWorldRotation = -boneWorldRotation;
-				}
-
+				Vector3 parentLossyScale = transformParent != null ? transformParent.lossyScale : Vector3.one;
 				if (followBoneRotation) {
+					float boneWorldRotation = bone.WorldRotationX;
+
+					if ((skeletonLossyScale.x * skeletonLossyScale.y) < 0)
+						boneWorldRotation = -boneWorldRotation;
+
+					if (followSkeletonFlip || maintainedAxisOrientation == AxisOrientation.XAxis) {
+						if ((skeletonLossyScale.x * parentLossyScale.x < 0))
+							boneWorldRotation += 180f;
+					}
+					else {
+						if ((skeletonLossyScale.y * parentLossyScale.y < 0))
+							boneWorldRotation += 180f;
+					}
+
 					Vector3 worldRotation = skeletonTransform.rotation.eulerAngles;
-					if (followScale &&
-						(followScaleMode == ScaleMode.Local ?
-						 (bone.scaleX < 0) :
-						 (bone.WorldScaleX < 0))) boneWorldRotation += 180f;
+					if (followLocalScale && bone.scaleX < 0) boneWorldRotation += 180f;
 					thisTransform.SetPositionAndRotation(targetWorldPosition, Quaternion.Euler(worldRotation.x, worldRotation.y, worldRotation.z + boneWorldRotation));
 				} else {
 					thisTransform.position = targetWorldPosition;
 				}
+
+				additionalFlipScale = Mathf.Sign(skeletonLossyScale.x * parentLossyScale.x
+												* skeletonLossyScale.y * parentLossyScale.y);
 			}
 
-			Vector3 localScale = followScale ? (followScaleMode == ScaleMode.Local ?
-				new Vector3(bone.scaleX, bone.scaleY, 1f) :
-				new Vector3(bone.WorldScaleX, bone.WorldScaleY, 1f)) :
-				new Vector3(1f, 1f, 1f);
-			if (followSkeletonFlip) localScale.y *= Mathf.Sign(bone.skeleton.ScaleX * bone.skeleton.ScaleY);
+			Vector3 localScale = followLocalScale ? new Vector3(bone.scaleX, bone.scaleY, 1f) : new Vector3(1f, 1f, 1f);
+			if (followSkeletonFlip)
+				localScale.y *= Mathf.Sign(bone.skeleton.ScaleX * bone.skeleton.ScaleY) * additionalFlipScale;
+
 			thisTransform.localScale = localScale;
 		}
 	}
